@@ -521,9 +521,9 @@ typedef enum {
  *        which will be passed to app defined entry actions
  * @return the csm_state_machine_return_t type return code
  */
-csm_state_machine_return_t csm_state_machine_init(
+csm_state_machine_return_t csm_init(
     csm_state_machine_t * machine, 
-    const void * context);
+    void * const context);
 
 /* 
  * Send event to a state machine
@@ -533,10 +533,29 @@ csm_state_machine_return_t csm_state_machine_init(
  *        will be passed to app defined entry/exit/transition actions
  * @return the csm_state_machine_return_t type return code
  */
-csm_state_machine_return_t csm_state_machine_run(
+csm_state_machine_return_t csm_run (
     const csm_state_machine_t * machine,
-    const csm_event_t * event, 
-    const void * context);
+    csm_event_t const * event, 
+    void * const context);
+
+/*
+ * Send event id <to></to> a state machine
+ * @param machine pointer to the state machine
+ * @param event the event id
+ * @param context pointer to app supplied execution context.
+          will be passed to app defined entry/exit/ranstion actions
+ * @return the csm_state_machine_return_t type return code
+ */
+csm_state_machine_return_t csm_simple_run(
+    const csm_state_machine_t * machine,
+    csm_event_id_t event,
+    void * const context);
+
+/*
+ * Take a snapshot of the statemachine. 
+ * @param snapshot an array used to save active state list
+ */
+void csm_take_snapshot(const csm_state_machine_t * machine, csm_state_id_t snapshot[]);
 
 #ifdef __cplusplus
 }

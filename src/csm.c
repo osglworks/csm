@@ -1,11 +1,28 @@
 #include "csm.h"
 
-typedef csm_state_t * state_ptr_t;
-typedef csm_event_t * event_ptr_t;
-typedef csm_transition_t * transition_ptr_t;
-typedef csm_state_machine_t * machine_ptr_t;
-typedef csm_config_t * config_ptr_t;
+/*
+ * CSM defined public data 
+ */
+csm_event_t CSM_EVENT_TERMINATE = {
+    .id = CSM_EVENT_ID_TERMINATE    
+};
 
+csm_event_t CSM_EVENT_COMPLETE = {
+    .id = CSM_EVENT_ID_COMPLETE
+};
+
+csm_event_t CSM_EVENT_INIT = {
+    .id = CSM_EVENT_ID_INIT
+};
+
+csm_state_t CSM_STATE_FINAL = {
+    .id = CSM_STATE_ID_FINAL,
+    .name = "final"
+};
+
+/*
+ * The linked list node stored in transition lookup table
+ */
 typedef struct lookup_node {
     csm_transition_t * transition;
     struct lookup_node * next;
@@ -54,8 +71,30 @@ static csm_state_machine_return_t init_machine(
     const csm_state_machine_t * const parent,
     csm_get_buffer_func_t get_buffer,
     csm_free_buffer_func_t free_buffer,
-    const void * context
+    void * const context
 );
+
+static csm_state_machine_return_t init_active_state(
+    const csm_state_machine_t * const machine,
+    void * const context
+) {
+    csm_data_t * const data = machine->csm_data;
+    if (NULL != data->active_state) {
+        return CSM_MACHINE_ERROR_FATAL;
+    }
+
+    const csm_state_t * state = data->entry_state;
+    if (NULL != state->on_enter) {
+        csm_action_return_t status = state->on_enter(&CSM_EVENT_INIT, context);
+        if (CSM_ACTION_OK != status) {
+            return CSM_MACHINE_ERROR_FATAL;
+        }
+    }
+
+    data->active_state = state;
+
+    return CSM_MACHINE_OK;
+}
 
 /* find out max state ID and recursively init sub machine */
 static csm_state_machine_return_t init_scan_states(
@@ -63,7 +102,7 @@ static csm_state_machine_return_t init_scan_states(
     int * max_state_id,
     csm_get_buffer_func_t get_buffer,
     csm_free_buffer_func_t free_buffer,
-    const void * context
+    void * const context
 ) {
     csm_state_machine_return_t status = CSM_MACHINE_OK;
     int i;
@@ -81,7 +120,8 @@ static csm_state_machine_return_t init_scan_states(
                     break;
                 }
             }
-            * max_state_id = MAX(* max_state_id, state.id);
+            int n = (int) state.id;
+            * max_state_id = MAX(* max_state_id, n);
         } else {
             status = CSM_MACHINE_ERROR_INIT_STATE_ID_OVERFLOW;
             break;
@@ -115,7 +155,8 @@ static csm_state_machine_return_t init_scan_transitions(
             break;
         }
         if (transition->event < CSM_EVENT_ID_UPPER_BOUND) {
-            (* max_event_id) = MAX(* max_event_id, transition->event);
+            int n = (int) transition -> event;
+            (* max_event_id) = MAX(* max_event_id, n);
         } else if (transition->event != CSM_EVENT_ID_COMPLETE) {
             status = CSM_MACHINE_ERROR_INIT_EVENT_ID_OVERFLOW;
             break;
@@ -183,9 +224,8 @@ static array_list_t * init__build_array_list(
     for (i = 0; i <= max_state_id; ++i) {
         int event_count = 0;
         csm_transition_t ** array = NULL;
-        lookup_node_t * list = NULL;
-        for (j = 0; j < machine->transition_count; ++i) {
-            const csm_transition_t * const transition = &(machine->transitions[i]);
+        for (j = 0; j < machine->transition_count; ++j) {
+            const csm_transition_t * const transition = &(machine->transitions[j]);
             if (transition->from->id != i) {
                 continue;
             }
@@ -211,7 +251,7 @@ static array_list_t * init__build_array_list(
                 if (NULL == array) {
                     return NULL;
                 }
-                lookup_node_t * node = list;
+                lookup_node_t * node = al->list;
                 while (NULL != node) {
                     array[node->transition->event] = node->transition;
                     lookup_node_t * tmp = node;
@@ -225,10 +265,13 @@ static array_list_t * init__build_array_list(
                 if (NULL == node) {
                     return NULL;
                 }
-                if (NULL != list) {
-                    node->next = list;
+                array_list_t * slot = &al[i];
+                if (NULL != slot->list) {
+                    node->next = slot->list;
+                } else {
+                    node->next = NULL;
                 }
-                list = node;
+                slot->list = node;
             }
         }
     }
@@ -242,7 +285,7 @@ static csm_state_machine_return_t init_build_machine(
     int max_event_id,
     csm_get_buffer_func_t get_buffer,
     csm_free_buffer_func_t free_buffer,
-    const void * context
+    void * const context
 ) {
     csm_state_machine_return_t status = CSM_MACHINE_OK;
     csm_optimize_hint_t hint = CSM_OPTIMIZE_AUTO;
@@ -268,10 +311,11 @@ static csm_state_machine_return_t init_build_machine(
     data->max_event_id = max_event_id;
     data->optimize_hint = hint;
     data->lookup = lookup;
-    data->entry_state = &machine->states[1];
+    data->entry_state = &machine->states[0];
     data->parent = parent;
     machine->csm_data = data;
-    return CSM_MACHINE_OK;
+
+    return init_active_state(machine, context);
 }
 
 static csm_state_machine_return_t init_machine(
@@ -279,7 +323,7 @@ static csm_state_machine_return_t init_machine(
     const csm_state_machine_t * const parent,
     csm_get_buffer_func_t get_buffer,
     csm_free_buffer_func_t free_buffer,
-    const void * context
+    void * const context
 ) {
     if (NULL == machine) {
         return CSM_MACHINE_ERROR_FATAL;
@@ -321,7 +365,7 @@ static csm_state_machine_return_t init_machine(
 
 
 static void init_config(csm_state_machine_t * const machine) {
-    config_ptr_t config = (config_ptr_t) machine->config;
+    csm_config_t * config = machine->config;
     if (NULL == config) {
         machine->config = &DEF_CONFIG;
     } else {
@@ -364,15 +408,74 @@ static csm_transition_t * lookup_transition(
                 if (event == node->transition->event) {
                     return node->transition;
                 }
+                node = node->next;
             }
             return NULL;
         }
     }
 }
 
-static csm_state_machine_return_t run_process_transition(
-) {
+static csm_state_machine_return_t run_exit_state(
+    const csm_state_machine_t * const machine,
+    const csm_state_t * const state,
+    const csm_event_t * const event,
+    void * const context);
 
+static csm_state_machine_return_t run_enter_state (
+    const csm_state_machine_t * const machine,
+    const csm_state_t * const target,
+    const boolean restore_history,
+    const csm_history_type_t history,
+    const csm_event_t * const event,
+    void * const context);
+
+static csm_state_machine_return_t run_process_transition(
+    const csm_state_machine_t * const machine,
+    const csm_transition_t * const transition,
+    const csm_event_t * const event,
+    void * const context
+) {
+    csm_data_t * const data = machine->csm_data;
+    const csm_state_t * const from = transition->from;
+    if (NULL != data->active_state && data->active_state != from) {
+        return CSM_MACHINE_ERROR_MACHINE_ERROR;
+    }
+    if (NULL != transition->guard && !transition->guard(event, context)) {
+        /* guard function prevent transition, so just return */
+        return CSM_MACHINE_OK;
+    }
+
+    const csm_state_t * to = transition->to;
+    const csm_transition_func_t action = transition->action;
+    if (NULL != action) {
+        csm_action_return_t result = action(event, context, to);
+        if (CSM_ACTION_ERROR == result) {
+            return CSM_MACHINE_ERROR_ACTION_ERROR;
+        } else if (CSM_ACTION_FATAL == result) {
+            return CSM_MACHINE_ERROR_FATAL;
+        }
+    }
+
+    csm_state_machine_return_t status = CSM_MACHINE_OK;
+    if (from != to) {
+        status = run_exit_state(machine, from, event, context);
+        if (CSM_MACHINE_OK != status) {
+            return status;
+        }
+    }
+
+    if (from != to) {
+        boolean restore_history = CSM_HISTORY_NONE != transition->history;
+        status = run_enter_state(
+            machine, 
+            to, 
+            restore_history, 
+            transition->history, 
+            event, 
+            context);
+    }
+
+    return status;
 }
 
 static csm_state_machine_return_t run_trigger_complete_event(
@@ -380,21 +483,32 @@ static csm_state_machine_return_t run_trigger_complete_event(
     const csm_event_t * const event,
     void * const context
 ) {
-    csm_data_t* data = machine->csm_data;
+    csm_data_t * const data = machine->csm_data;
     csm_transition_t * transition = lookup_transition(data, event->id);
     if (NULL != transition) {
-        // TODO process transition
+        run_process_transition(machine, transition, event, context);
     }
 }
 
-static csm_state_machine_return_t run_enter_state(
+static csm_state_machine_return_t run_exit_state(
     const csm_state_machine_t * const machine,
-    const csm_state_t * const target,
+    const csm_state_t * const state,
     const csm_event_t * const event,
-    const boolean restore_history,
-    const csm_history_type_t history,
     void * const context
-);
+) {
+    if (NULL != state->on_exit) {
+        csm_action_return_t result = state->on_exit(event, context);
+        if (CSM_ACTION_OK != result) {
+            return CSM_MACHINE_ERROR_ACTION_ERROR;
+        }
+    }
+
+    if (NULL != state->sub_machine) {
+
+    }
+
+    return CSM_MACHINE_OK;
+}
 
 static csm_state_machine_return_t run_restore_history(
     const csm_state_machine_t * const machine,
@@ -408,9 +522,9 @@ static csm_state_machine_return_t run_restore_history(
         run_enter_state(
             machine, 
             data->history_state, 
-            event, 
             restore_history, 
             history, 
+            event, 
             context);
     }
 }
@@ -418,9 +532,9 @@ static csm_state_machine_return_t run_restore_history(
 static csm_state_machine_return_t run_enter_state(
     const csm_state_machine_t * const machine,
     const csm_state_t * const target,
-    const csm_event_t * const event,
     const boolean restore_history,
     const csm_history_type_t history,
+    const csm_event_t * const event,
     void * const context
 ) {
 
@@ -461,38 +575,81 @@ static csm_state_machine_return_t run_handle_event(
     const csm_state_machine_t * const machine,
     const csm_event_t * const event,
     void * const context
-);
+) {
+    csm_state_machine_return_t status = CSM_MACHINE_OK;
+    csm_data_t * data = machine->csm_data;
+    const csm_state_t * state = data->active_state;
+    if (NULL == state) {
+        status = init_active_state(machine, context);
+        if (CSM_MACHINE_OK != status) {
+            return status;
+        }
+        state = data->active_state;
+    }
+    if (event->id > data->max_event_id) {
+        csm_state_machine_t * const sub_machine = state->sub_machine;
+        if (NULL != sub_machine) {
+            return run_handle_event(sub_machine, event, context);
+        }
+        return CSM_MACHINE_ERROR_UNKNOWN_EVENT;
+    }
 
+    csm_transition_t * transition = lookup_transition(data, event->id);
+    if (NULL == transition) {
+        return CSM_MACHINE_ERROR_UNKNOWN_EVENT;
+    }
 
-/* ------------------------------------------------------------------------ */
+    return run_process_transition(machine, transition, event, context);
+}
+
+static void destroy(const csm_state_machine_t * const machine) {
+
+}
+
+csm_state_machine_return_t run (
+    const csm_state_machine_t * machine,
+    csm_event_t const * event,
+    void * const context
+) {
+    csm_state_machine_return_t status = run_handle_event(machine, event, context);
+    if (CSM_MACHINE_ERROR_FATAL <= status) {
+        destroy(machine);
+    }
+    return status;
+}
 
 /*
- * CSM defined public data 
+ * triage event to see if we should terminate handling immediately
+ * @param event: the event id
+ * @param status: pointer to status
+ * @return TRUE if handling should be terminated, FALSE otherwise
  */
-csm_event_t CSM_EVENT_TERMINATE = {
-    .id = CSM_EVENT_ID_TERMINATE    
-};
+boolean check_event(
+    const csm_state_machine_t * machine,
+    csm_event_id_t event, 
+    csm_state_machine_return_t * status
+) {
+    if (CSM_EVENT_ID_UPPER_BOUND < event) {
+        if (CSM_EVENT_ID_TERMINATE == event) {
+            destroy(machine);
+            * status = CSM_MACHINE_OK;
+        } else {
+            * status = CSM_MACHINE_ERROR_UNKNOWN_EVENT;
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
 
-csm_event_t CSM_EVENT_COMPLETE = {
-    .id = CSM_EVENT_ID_COMPLETE
-};
-
-csm_event_t CSM_EVENT_INIT = {
-    .id = CSM_EVENT_ID_INIT
-};
-
-csm_state_t CSM_STATE_FINAL = {
-    .id = CSM_STATE_ID_FINAL,
-    .name = "final"
-};
+/* ------------------------------------------------------------------------ */
 
 /*
  * public functions
  */
 
-csm_state_machine_return_t csm_state_machine_init(
+csm_state_machine_return_t csm_init(
     csm_state_machine_t * const machine, 
-    const void * context) 
+    void * const context) 
 {
     init_config(machine);
     return init_machine(
@@ -501,4 +658,42 @@ csm_state_machine_return_t csm_state_machine_init(
         machine->config->get_buffer, 
         machine->config->free_buffer, 
         context);
+}
+
+csm_state_machine_return_t csm_simple_run(
+    const csm_state_machine_t * machine,
+    csm_event_id_t event,
+    void * const context
+) {
+    csm_state_machine_return_t status = CSM_MACHINE_OK;
+    if (check_event(machine, event, &status)) {
+        return status;
+    }
+
+    csm_event_t event_obj = {event, NULL};
+
+    return run(machine, &event_obj, context);
+}
+
+csm_state_machine_return_t csm_run (
+    const csm_state_machine_t * machine,
+    csm_event_t const * event,
+    void * const context
+) {
+    csm_state_machine_return_t status = CSM_MACHINE_OK;
+    if (!check_event(machine, event->id, &status)) {
+        return status;
+    }
+
+    return run(machine, event, context);
+}
+
+void csm_take_snapshot(const csm_state_machine_t * machine, csm_state_id_t * snapshot) {
+    int level = 0;
+    while (NULL != machine) {
+        const csm_data_t * data = machine->csm_data;
+        const csm_state_t * state = data->active_state;
+        snapshot[level++] = state->id;
+        machine = state->sub_machine;
+    }
 }
